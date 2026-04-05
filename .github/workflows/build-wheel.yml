@@ -1,0 +1,84 @@
+name: Build Wheel
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Optional tag to create a release for (leave empty for artifact-only build)'
+        required: false
+        default: ''
+
+jobs:
+  build-wheel:
+    name: Build fa3_fwd wheel (Hopper sm_90a)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install CUDA Toolkit 12.6
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.6.0'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cudart-dev", "nvrtc", "nvrtc-dev", "nvtx", "cccl", "profiler-api"]'
+
+      - name: Show CUDA / nvcc
+        run: |
+          nvcc --version
+          which nvcc
+
+      - name: Install PyTorch and build deps
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu124
+          pip install -r requirements.txt
+          pip install ninja packaging
+
+      - name: Build fa3_fwd wheel
+        env:
+          MAX_JOBS: '2'
+          NVCC_THREADS: '1'
+          TORCH_CUDA_ARCH_LIST: '9.0a'
+          FLASH_ATTENTION_FORCE_BUILD: 'TRUE'
+        run: |
+          bash build_fa3.sh
+
+      - name: List built wheels
+        run: |
+          ls -lah build/
+          ls -lah flash-attention/hopper/dist/ || true
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fa3_fwd-wheel
+          path: build/*.whl
+          if-no-files-found: error
+
+      - name: Create GitHub Release (on tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/*.whl
+          generate_release_notes: true
+          fail_on_unmatched_files: true
