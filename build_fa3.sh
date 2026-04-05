@@ -19,14 +19,17 @@ fi
 mkdir -p build
 
 cp hopper_setup_py.patch flash-attention/
+cp two_level_accum.patch flash-attention/
 
 cd flash-attention
 
 git checkout .
 
 git apply --check hopper_setup_py.patch
-
 git apply hopper_setup_py.patch
+
+git apply --check two_level_accum.patch
+git apply two_level_accum.patch
 
 cd hopper
 

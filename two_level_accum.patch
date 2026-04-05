@@ -1,0 +1,60 @@
+diff --git a/hopper/setup.py b/hopper/setup.py
+index 95729ed..c5e9aad 100644
+--- a/hopper/setup.py
++++ b/hopper/setup.py
+@@ -66,6 +66,7 @@ ENABLE_VCOLMAJOR = os.getenv("FLASH_ATTENTION_ENABLE_VCOLMAJOR", "FALSE") == "TR
+ 
+ DISABLE_HDIMDIFF64 = os.getenv("FLASH_ATTENTION_DISABLE_HDIMDIFF64", "FALSE") == "TRUE"
+ DISABLE_HDIMDIFF192 = os.getenv("FLASH_ATTENTION_DISABLE_HDIMDIFF192", "FALSE") == "TRUE"
++DISABLE_FP8_TWO_LEVEL_ACCUMULATION = os.getenv("FLASH_ATTENTION_DISABLE_FP8_TWO_LEVEL_ACCUMULATION", "FALSE") == "TRUE"
+ 
+ # HACK: we monkey patch pytorch's _write_ninja_file to pass
+ # "-gencode arch=compute_sm90a,code=sm_90a" to files ending in '_sm90.cu',
+@@ -516,6 +517,7 @@ if not SKIP_CUDA_BUILD:
+         + (["-DFLASHATTENTION_ENABLE_VCOLMAJOR"] if ENABLE_VCOLMAJOR else [])
+         + (["-DFLASHATTENTION_DISABLE_HDIMDIFF64"] if DISABLE_HDIMDIFF64 else [])
+         + (["-DFLASHATTENTION_DISABLE_HDIMDIFF192"] if DISABLE_HDIMDIFF192 else [])
++        + (["-DFLASHATTENTION_DISABLE_FP8_TWO_LEVEL_ACCUMULATION"] if DISABLE_FP8_TWO_LEVEL_ACCUMULATION else [])
+     )
+ 
+     DTYPE_FWD_SM80 = ["bf16"] + (["fp16"] if not DISABLE_FP16 else [])
+diff --git a/hopper/utils.h b/hopper/utils.h
+index a568e30..2b39ec7 100644
+--- a/hopper/utils.h
++++ b/hopper/utils.h
+@@ -254,6 +254,20 @@ auto mma_partition_fragment_AB(Mma const& mma, Tensor0 const& tensor0) {
+ template <bool zero_init=false, int wg_wait=0, bool SwapAB=false, int M_slice=-1,
+         typename Tensor0, typename Tensor1, typename Tensor2, typename TiledMma>
+ CUTLASS_DEVICE void gemm(TiledMma& tiled_mma, Tensor0 const& tCrA, Tensor1 const& tCrB, Tensor2& tCrC) {
++#ifndef FLASHATTENTION_DISABLE_FP8_TWO_LEVEL_ACCUMULATION
++    static constexpr bool Is_FP8 = cute::is_same_v<typename Tensor0::value_type, cutlass::float_e4m3_t>
++        || cute::is_same_v<typename Tensor0::value_type, cutlass::float_e5m2_t>;
++    static constexpr bool Use_Two_Level = Is_FP8 && !zero_init;
++
++    auto tCrC_original = cute::make_fragment_like(tCrC);
++    if constexpr (Use_Two_Level) {
++        #pragma unroll
++        for (int i = 0; i < cute::size(tCrC); ++i) {
++            tCrC_original(i) = tCrC(i);
++        }
++        cute::clear(tCrC);
++    }
++#endif
+     if constexpr (M_slice >= 0) {
+         static constexpr int MMA_M = decltype(size<1>(tCrC))::value;
+         static_assert(M_slice < MMA_M);
+@@ -320,6 +334,14 @@ CUTLASS_DEVICE void gemm(TiledMma& tiled_mma, Tensor0 const& tCrA, Tensor1 const
+             }
+         }
+     }
++#ifndef FLASHATTENTION_DISABLE_FP8_TWO_LEVEL_ACCUMULATION
++    if constexpr (Use_Two_Level) {
++        #pragma unroll
++        for (int i = 0; i < cute::size(tCrC); ++i) {
++            tCrC(i) = tCrC_original(i) + tCrC(i);
++        }
++    }
++#endif
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
